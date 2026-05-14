@@ -4,7 +4,7 @@ const supabaseUrl = 'https://uzemcypozcuygmjgpwol.supabase.co'
 const supabaseKey = 'sb_publishable_Tyqp0uFO_fjlcxtaOfAKRw_bNuPl1LX'
 
 export const supabase = createClient(supabaseUrl, supabaseKey)
-export const supabase = createClient(supabaseUrl, supabaseKey)
+
 
 // ── Generic helpers ──────────────────────────────────────────────────────────
 export async function dbLoad(table, fallback = []) {
