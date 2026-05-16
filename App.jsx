@@ -23,6 +23,21 @@ async function save(key, val) {
   } catch(e) { console.error('Save error:', e); }
 }
 
+async function uploadFile(file, folder) {
+  try {
+    const ext = file.name.split('.').pop();
+    const path = `${folder}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+    const { data, error } = await _sb.storage.from('attachments').upload(path, file, { contentType: file.type });
+    if (error) throw error;
+    const { data: url } = _sb.storage.from('attachments').getPublicUrl(path);
+    return { name: file.name, url: url.publicUrl, path, size: file.size, uploadedAt: new Date().toISOString() };
+  } catch(e) { console.error('Upload error:', e); return null; }
+}
+
+async function deleteFile(path) {
+  try { await _sb.storage.from('attachments').remove([path]); } catch(e) { console.error('Delete error:', e); }
+}
+
 const B = {
   carbon:"#2D2D2D", carbon2:"#3A3A3A", carbon3:"#4A4A4A",
   gold:"#C9A84C", goldL:"#E2BE72", goldD:"#A8863A",
@@ -132,6 +147,7 @@ function genPO(n)     { return `PO-${new Date().getFullYear()}-${String(n).padSt
 function genId(pre,n) { return `${pre}-${new Date().getFullYear()}-${String(n).padStart(4,"0")}`; }
 function daysUntil(d) { return Math.ceil((new Date(d)-new Date())/(1000*60*60*24)); }
 function fmt(n) { return parseFloat(n||0).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function fileSize(bytes) { if(bytes<1024)return`${bytes}B`; if(bytes<1048576)return`${(bytes/1024).toFixed(1)}KB`; return`${(bytes/1048576).toFixed(1)}MB`; }
 
 function scoreSuppliers(responses, suppliers) {
   const ans = responses.filter(r=>r.status==="quoted"&&r.price>0);
@@ -212,10 +228,15 @@ html,body,#root{height:100%;}
 .sec-lbl{font-family:'Montserrat';font-size:10px;font-weight:700;color:#8A8378;letter-spacing:1px;text-transform:uppercase;margin-bottom:7px;display:flex;align-items:center;gap:8px;}
 .sec-lbl::after{content:'';flex:1;height:1px;background:#E8E4DC;}
 .line-item{background:#F7F5F1;border:1px solid #E8E4DC;border-radius:8px;padding:12px;margin-bottom:8px;}
+.drop-zone{border:2px dashed #E8E4DC;border-radius:8px;padding:20px;text-align:center;cursor:pointer;transition:all .2s;}
+.drop-zone:hover,.drop-zone.drag-over{border-color:#C9A84C;background:rgba(201,168,76,.05);}
+.attach-item{display:flex;align-items:center;gap:10px;padding:8px 12px;background:#F7F5F1;border:1px solid #E8E4DC;border-radius:7px;margin-bottom:5px;}
 @keyframes fi{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}
 @keyframes su{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
+@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 .fi{animation:fi .2s ease forwards;}
 .su{animation:su .25s cubic-bezier(.34,1.4,.64,1) forwards;}
+.spin{animation:spin 1s linear infinite;}
 `;
 function ProgressBar({ stage, small }) {
   const idx = STAGES.findIndex(s=>s.id===stage);
@@ -260,15 +281,51 @@ function SH({ title, action }) {
   );
 }
 
-function InfoBox({ color, children }) {
-  const colors = {
-    gold: {bg:"rgba(201,168,76,.08)",bd:"rgba(201,168,76,.25)",c:"#A8863A"},
-    blue: {bg:"rgba(91,155,213,.08)",bd:"rgba(91,155,213,.25)",c:"#3A6FA8"},
-    orange: {bg:"rgba(212,116,90,.08)",bd:"rgba(212,116,90,.25)",c:"#A8543A"},
-    green: {bg:"rgba(90,173,122,.08)",bd:"rgba(90,173,122,.25)",c:"#3D8A5C"},
+function Attachments({ attachments=[], onAdd, onDelete, folder, readOnly=false }) {
+  const [uploading, setUploading] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+
+  const handleFiles = async (files) => {
+    setUploading(true);
+    for (const file of Array.from(files)) {
+      if (file.size > 10*1024*1024) { alert(`${file.name} exceeds 10MB limit`); continue; }
+      const result = await uploadFile(file, folder);
+      if (result) onAdd(result);
+    }
+    setUploading(false);
   };
-  const cc = colors[color]||colors.gold;
-  return <div style={{padding:"10px 14px",borderRadius:8,background:cc.bg,border:`1px solid ${cc.bd}`,color:cc.c,fontSize:12,fontFamily:"Montserrat",fontWeight:600}}>{children}</div>;
+
+  return (
+    <div>
+      <div className="sec-lbl">Attachments ({attachments.length})</div>
+      {attachments.map((a,i)=>(
+        <div key={i} className="attach-item">
+          <span style={{fontSize:18}}>📄</span>
+          <div style={{flex:1,minWidth:0}}>
+            <a href={a.url} target="_blank" rel="noreferrer" style={{fontSize:12,color:"#2D2D2D",fontWeight:600,textDecoration:"none",display:"block",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{a.name}</a>
+            <div style={{fontSize:10,color:"#8A8378"}}>{fileSize(a.size)} · {new Date(a.uploadedAt).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"})}</div>
+          </div>
+          <a href={a.url} target="_blank" rel="noreferrer" className="btn btn-ghost btn-sm" style={{textDecoration:"none",fontSize:11}}>Open</a>
+          {!readOnly&&<button onClick={async()=>{await deleteFile(a.path);onDelete(i);}} className="btn btn-danger btn-sm">✕</button>}
+        </div>
+      ))}
+      {!readOnly&&(
+        <div
+          className={`drop-zone ${dragOver?"drag-over":""}`}
+          onDragOver={e=>{e.preventDefault();setDragOver(true);}}
+          onDragLeave={()=>setDragOver(false)}
+          onDrop={e=>{e.preventDefault();setDragOver(false);handleFiles(e.dataTransfer.files);}}
+          onClick={()=>document.getElementById(`file-input-${folder}`).click()}
+        >
+          <input id={`file-input-${folder}`} type="file" accept=".pdf,.jpg,.jpeg,.png,.xlsx,.docx" multiple style={{display:"none"}} onChange={e=>handleFiles(e.target.files)}/>
+          {uploading
+            ? <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:8}}><div className="spin" style={{width:16,height:16,border:"2px solid #C9A84C",borderTopColor:"transparent",borderRadius:"50%"}}/><span style={{fontSize:12,color:"#8A8378"}}>Uploading...</span></div>
+            : <div><div style={{fontSize:20,marginBottom:4}}>📎</div><div style={{fontSize:12,color:"#8A8378"}}>Drop files here or <span style={{color:"#A8863A",fontWeight:700}}>click to browse</span></div><div style={{fontSize:10,color:"#C8C2B4",marginTop:2}}>PDF, images, Excel, Word · Max 10MB each</div></div>
+          }
+        </div>
+      )}
+    </div>
+  );
 }
 export default function ProcuraApp() {
   const [page, setPage] = useState("dashboard");
@@ -301,7 +358,6 @@ export default function ProcuraApp() {
   },[]);
 
   const showToast=(msg,icon="✅")=>{ setToast({msg,icon}); setTimeout(()=>setToast(null),3500); };
-
   const saveReqs=async v=>{setReqs(v);await save("proc:reqs",v);};
   const saveRfqs=async v=>{setRfqs(v);await save("proc:rfqs",v);};
   const saveCmps=async v=>{setCmps(v);await save("proc:cmps",v);};
@@ -334,7 +390,7 @@ export default function ProcuraApp() {
       <style>{STYLE}</style>
       <div className="sb">
         <div className="sb-head">
-          <div style={{display:"flex",alignItems:"center",gap:9,marginBottom:0}}>
+          <div style={{display:"flex",alignItems:"center",gap:9,marginBottom:8}}>
             <div className="sb-mark">748</div>
             <div><div className="sb-name">DEVELOPMENT</div><div className="sb-tag">PROCUREMENT</div></div>
           </div>
@@ -475,8 +531,7 @@ function REQPage({ctx}){
       history:[{stage:"REQ",date:new Date().toISOString(),note:`${form.reqType==="field"?"Field":"Estimation"} requisition created — ${form.items?.length||1} item(s)`}]};
     await saveReqs([req,...reqs]);
     setCtrPO(n); await save("proc:ctrPO",n);
-    setShowNew(false);
-    showToast(`${req.id} created — ${form.items?.length||1} item(s)`);
+    setShowNew(false); showToast(`${req.id} created — ${form.items?.length||1} item(s)`);
   };
 
   const filtered=reqs.filter(r=>{
@@ -495,9 +550,7 @@ function REQPage({ctx}){
         <div className="gl"/>
         <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:16}}>
           {[{l:"Total PRs",v:reqs.length,c:"#2D2D2D"},{l:"Field",v:reqs.filter(r=>r.reqType==="field").length,c:"#D4745A"},{l:"Estimation",v:reqs.filter(r=>r.reqType==="estimation").length,c:"#5B9BD5"},{l:"Urgent",v:reqs.filter(r=>r.priority==="urgent").length,c:"#C94A4A"}].map(s=>(
-            <div key={s.l} className="stat" style={{"--sc":s.c}}>
-              <div className="stat-val">{s.v}</div><div className="stat-lbl">{s.l}</div>
-            </div>
+            <div key={s.l} className="stat" style={{"--sc":s.c}}><div className="stat-val">{s.v}</div><div className="stat-lbl">{s.l}</div></div>
           ))}
         </div>
         <div style={{display:"flex",gap:8,marginBottom:14}}>
@@ -544,31 +597,23 @@ function REQPage({ctx}){
     </div>
   );
 }
+
 function REQForm({onClose,onSubmit,projs,sups}){
   const [reqType,setReqType]=useState(null);
-  const [f,setF]=useState({
-    priority:"normal",projectId:"",deliveryLocation:"Warehouse",
-    neededBy:"",fieldRequestedBy:"",fieldSupervisor:"",site:"",
-    estimatedBudget:"",justification:"",targetDate:"",
-    items:[{id:1,description:"",qty:"",unit:"EA",costCode:"",notes:""}],
-  });
+  const [f,setF]=useState({priority:"normal",projectId:"",deliveryLocation:"Warehouse",neededBy:"",fieldRequestedBy:"",fieldSupervisor:"",site:"",estimatedBudget:"",justification:"",targetDate:"",items:[{id:1,description:"",qty:"",unit:"EA",costCode:"",notes:""}]});
   const set=(k,v)=>setF(p=>({...p,[k]:v}));
   const setItem=(idx,k,v)=>setF(p=>({...p,items:p.items.map((it,i)=>i===idx?{...it,[k]:v}:it)}));
   const addItem=()=>setF(p=>({...p,items:[...p.items,{id:Date.now(),description:"",qty:"",unit:"EA",costCode:"",notes:""}]}));
   const removeItem=idx=>setF(p=>({...p,items:p.items.filter((_,i)=>i!==idx)}));
-
   const valid=reqType&&f.items.length>0&&f.items.every(i=>i.description)&&f.neededBy&&(reqType==="field"?f.fieldRequestedBy:f.projectId);
 
   if(!reqType) return(
     <div className="ov" onClick={e=>e.target===e.currentTarget&&onClose()}>
       <div className="mod su" style={{maxWidth:560}}>
-        <div className="mod-head">
-          <div><div style={{fontFamily:"Montserrat",fontSize:16,fontWeight:800,color:"#2D2D2D"}}>New Purchase Requisition</div><div style={{fontSize:12,color:"#8A8378",marginTop:2}}>Select request type to continue</div></div>
-          <button className="btn btn-ghost btn-sm" onClick={onClose}>✕</button>
-        </div>
+        <div className="mod-head"><div><div style={{fontFamily:"Montserrat",fontSize:16,fontWeight:800,color:"#2D2D2D"}}>New Purchase Requisition</div><div style={{fontSize:12,color:"#8A8378",marginTop:2}}>Select request type</div></div><button className="btn btn-ghost btn-sm" onClick={onClose}>✕</button></div>
         <div style={{display:"flex",gap:14,marginBottom:20}}>
-          {[{k:"field",icon:"🏗️",title:"Field Request",desc:"Urgent or unplanned need from jobsite. Requires requester and supervisor."},{k:"estimation",icon:"📊",title:"Estimation",desc:"Planned purchase linked to a project budget and schedule."}].map(({k,icon,title,desc})=>(
-            <div key={k} onClick={()=>setReqType(k)} style={{flex:1,border:"2px solid #E8E4DC",borderRadius:10,padding:18,cursor:"pointer",transition:"all .18s",background:"#fff",textAlign:"left"}}>
+          {[{k:"field",icon:"🏗️",title:"Field Request",desc:"Urgent or unplanned need from jobsite."},{k:"estimation",icon:"📊",title:"Estimation",desc:"Planned purchase linked to project budget."}].map(({k,icon,title,desc})=>(
+            <div key={k} onClick={()=>setReqType(k)} style={{flex:1,border:"2px solid #E8E4DC",borderRadius:10,padding:18,cursor:"pointer",transition:"all .18s",background:"#fff"}}>
               <div style={{fontSize:30,marginBottom:10}}>{icon}</div>
               <div style={{fontFamily:"Montserrat",fontSize:13,fontWeight:800,color:"#2D2D2D",marginBottom:5}}>{title}</div>
               <div style={{fontSize:12,color:"#8A8378",lineHeight:1.6}}>{desc}</div>
@@ -584,46 +629,27 @@ function REQForm({onClose,onSubmit,projs,sups}){
     <div className="ov" onClick={e=>e.target===e.currentTarget&&onClose()}>
       <div className="mod su">
         <div className="mod-head">
-          <div>
-            <div style={{display:"flex",alignItems:"center",gap:10}}>
-              <div style={{fontFamily:"Montserrat",fontSize:16,fontWeight:800,color:"#2D2D2D"}}>{reqType==="field"?"🏗️ Field Request":"📊 Estimation"}</div>
-              <button onClick={()=>setReqType(null)} className="btn btn-ghost btn-sm">Change</button>
-            </div>
-            <div style={{fontSize:11,color:"#8A8378",marginTop:2}}>PR number will be generated automatically</div>
-          </div>
+          <div><div style={{display:"flex",alignItems:"center",gap:10}}><div style={{fontFamily:"Montserrat",fontSize:16,fontWeight:800,color:"#2D2D2D"}}>{reqType==="field"?"🏗️ Field Request":"📊 Estimation"}</div><button onClick={()=>setReqType(null)} className="btn btn-ghost btn-sm">Change</button></div><div style={{fontSize:11,color:"#8A8378",marginTop:2}}>PR number will be generated automatically</div></div>
           <button className="btn btn-ghost btn-sm" onClick={onClose}>✕</button>
         </div>
         <div style={{display:"grid",gap:14}}>
           <div>
             <div className="sec-lbl">General Info</div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,marginBottom:10}}>
-              <div><label className="lbl">Project</label>
-                <select className="sel" value={f.projectId} onChange={e=>set("projectId",e.target.value)}>
-                  <option value="">— Select project —</option>
-                  {(projs||[]).map(p=><option key={p.id} value={p.id}>{p.code} — {p.name}</option>)}
-                </select>
-              </div>
-              <div><label className="lbl">Delivery Location</label>
-                <select className="sel" value={f.deliveryLocation} onChange={e=>set("deliveryLocation",e.target.value)}>
-                  {DELIVERY_LOCS.map(l=><option key={l}>{l}</option>)}
-                </select>
-              </div>
+              <div><label className="lbl">Project</label><select className="sel" value={f.projectId} onChange={e=>set("projectId",e.target.value)}><option value="">— Select project —</option>{(projs||[]).map(p=><option key={p.id} value={p.id}>{p.code} — {p.name}</option>)}</select></div>
+              <div><label className="lbl">Delivery Location</label><select className="sel" value={f.deliveryLocation} onChange={e=>set("deliveryLocation",e.target.value)}>{DELIVERY_LOCS.map(l=><option key={l}>{l}</option>)}</select></div>
               <div><label className="lbl">Date Needed *</label><input className="inp" type="date" value={f.neededBy} onChange={e=>set("neededBy",e.target.value)}/></div>
             </div>
-            {reqType==="field"&&(
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
-                <div><label className="lbl">Requested By *</label><input className="inp" value={f.fieldRequestedBy} onChange={e=>set("fieldRequestedBy",e.target.value)} placeholder="Name of requester"/></div>
-                <div><label className="lbl">Supervisor</label><input className="inp" value={f.fieldSupervisor} onChange={e=>set("fieldSupervisor",e.target.value)} placeholder="Supervisor name"/></div>
-                <div><label className="lbl">Site / Location</label><input className="inp" value={f.site} onChange={e=>set("site",e.target.value)} placeholder="e.g. Tower A - Floor 8"/></div>
-              </div>
-            )}
-            {reqType==="estimation"&&(
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
-                <div><label className="lbl">Estimated Budget ($)</label><input className="inp" type="number" value={f.estimatedBudget} onChange={e=>set("estimatedBudget",e.target.value)} placeholder="0.00"/></div>
-                <div><label className="lbl">Target Date</label><input className="inp" type="date" value={f.targetDate} onChange={e=>set("targetDate",e.target.value)}/></div>
-                <div style={{gridColumn:"1/-1"}}><label className="lbl">Justification</label><textarea className="ta" value={f.justification} onChange={e=>set("justification",e.target.value)} placeholder="Why is this purchase needed?"/></div>
-              </div>
-            )}
+            {reqType==="field"&&(<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
+              <div><label className="lbl">Requested By *</label><input className="inp" value={f.fieldRequestedBy} onChange={e=>set("fieldRequestedBy",e.target.value)} placeholder="Name of requester"/></div>
+              <div><label className="lbl">Supervisor</label><input className="inp" value={f.fieldSupervisor} onChange={e=>set("fieldSupervisor",e.target.value)} placeholder="Supervisor name"/></div>
+              <div><label className="lbl">Site / Location</label><input className="inp" value={f.site} onChange={e=>set("site",e.target.value)} placeholder="e.g. Tower A - Floor 8"/></div>
+            </div>)}
+            {reqType==="estimation"&&(<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:10}}>
+              <div><label className="lbl">Estimated Budget ($)</label><input className="inp" type="number" value={f.estimatedBudget} onChange={e=>set("estimatedBudget",e.target.value)} placeholder="0.00"/></div>
+              <div><label className="lbl">Target Date</label><input className="inp" type="date" value={f.targetDate} onChange={e=>set("targetDate",e.target.value)}/></div>
+              <div style={{gridColumn:"1/-1"}}><label className="lbl">Justification</label><textarea className="ta" value={f.justification} onChange={e=>set("justification",e.target.value)} placeholder="Why is this purchase needed?"/></div>
+            </div>)}
           </div>
           <div>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
@@ -639,20 +665,11 @@ function REQForm({onClose,onSubmit,projs,sups}){
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:"3fr 1fr 1fr",gap:8,marginBottom:8}}>
                   <div><label className="lbl">Description *</label><input className="inp" value={item.description} onChange={e=>setItem(idx,"description",e.target.value)} placeholder="What is needed?"/></div>
-                  <div><label className="lbl">Qty <span style={{color:"#C8C2B4",fontWeight:400,textTransform:"none"}}>(opt)</span></label><input className="inp" type="number" value={item.qty} onChange={e=>setItem(idx,"qty",e.target.value)} placeholder="—"/></div>
-                  <div><label className="lbl">Unit</label>
-                    <select className="sel" value={item.unit} onChange={e=>setItem(idx,"unit",e.target.value)}>
-                      {UNITS.map(u=><option key={u}>{u}</option>)}
-                    </select>
-                  </div>
+                  <div><label className="lbl">Qty (opt)</label><input className="inp" type="number" value={item.qty} onChange={e=>setItem(idx,"qty",e.target.value)} placeholder="—"/></div>
+                  <div><label className="lbl">Unit</label><select className="sel" value={item.unit} onChange={e=>setItem(idx,"unit",e.target.value)}>{UNITS.map(u=><option key={u}>{u}</option>)}</select></div>
                 </div>
                 <div style={{display:"grid",gridTemplateColumns:"2fr 2fr",gap:8}}>
-                  <div><label className="lbl">Cost Code</label>
-                    <select className="sel" value={item.costCode} onChange={e=>setItem(idx,"costCode",e.target.value)}>
-                      <option value="">— Select cost code —</option>
-                      {COST_CODES.map(c=><option key={c} value={c}>{c}</option>)}
-                    </select>
-                  </div>
+                  <div><label className="lbl">Cost Code</label><select className="sel" value={item.costCode} onChange={e=>setItem(idx,"costCode",e.target.value)}><option value="">— Select —</option>{COST_CODES.map(c=><option key={c} value={c}>{c}</option>)}</select></div>
                   <div><label className="lbl">Notes / Specs</label><input className="inp" value={item.notes} onChange={e=>setItem(idx,"notes",e.target.value)} placeholder="Brand, spec, notes..."/></div>
                 </div>
               </div>
@@ -662,9 +679,7 @@ function REQForm({onClose,onSubmit,projs,sups}){
             <div className="sec-lbl">Priority</div>
             <div style={{display:"flex",gap:10}}>
               {Object.entries(PRIORITY).map(([k,p])=>(
-                <button key={k} onClick={()=>set("priority",k)} style={{flex:1,padding:"10px",border:`1.5px solid ${f.priority===k?p.color:"#E8E4DC"}`,borderRadius:8,cursor:"pointer",background:f.priority===k?p.bg:"#F7F5F1",color:f.priority===k?p.color:"#8A8378",fontFamily:"Montserrat",fontSize:11,fontWeight:700,transition:"all .15s"}}>
-                  {p.dot} {p.label}
-                </button>
+                <button key={k} onClick={()=>set("priority",k)} style={{flex:1,padding:"10px",border:`1.5px solid ${f.priority===k?p.color:"#E8E4DC"}`,borderRadius:8,cursor:"pointer",background:f.priority===k?p.bg:"#F7F5F1",color:f.priority===k?p.color:"#8A8378",fontFamily:"Montserrat",fontSize:11,fontWeight:700,transition:"all .15s"}}>{p.dot} {p.label}</button>
               ))}
             </div>
           </div>
@@ -673,13 +688,7 @@ function REQForm({onClose,onSubmit,projs,sups}){
           <button onClick={()=>setReqType(null)} style={{fontSize:12,color:"#8A8378",background:"none",border:"none",cursor:"pointer"}}>← Change type</button>
           <div style={{display:"flex",gap:10}}>
             <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-            <button className="btn btn-gold" disabled={!valid} style={{opacity:valid?1:.45}}
-              onClick={()=>onSubmit({...f,reqType,
-                description:f.items.map((it,i)=>`${i+1}. ${it.description}`).join(" | "),
-                quantity:f.items[0]?.qty||1,unit:f.items[0]?.unit||"EA",
-              })}>
-              Generate PR →
-            </button>
+            <button className="btn btn-gold" disabled={!valid} style={{opacity:valid?1:.45}} onClick={()=>onSubmit({...f,reqType,description:f.items.map((it,i)=>`${i+1}. ${it.description}`).join(" | "),quantity:f.items[0]?.qty||1,unit:f.items[0]?.unit||"EA"})}>Generate PR →</button>
           </div>
         </div>
       </div>
@@ -695,45 +704,25 @@ function REQDetail({req,projs,onClose}){
     <div className="ov" onClick={e=>e.target===e.currentTarget&&onClose()}>
       <div className="mod su" style={{maxWidth:700}}>
         <div className="mod-head">
-          <div>
-            <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:8}}>
-              <span className="bpo">{req.id}</span>
-              <span style={{fontSize:10,fontWeight:700,background:isField?"rgba(212,116,90,.10)":"rgba(91,155,213,.10)",color:isField?"#D4745A":"#5B9BD5",border:`1px solid ${isField?"rgba(212,116,90,.28)":"rgba(91,155,213,.28)"}`,padding:"2px 8px",borderRadius:4,fontFamily:"Montserrat"}}>{isField?"🏗️ Field":"📊 Estimation"}</span>
-              <span className="chip" style={{background:p.bg,color:p.color}}>{p.dot} {p.label}</span>
-            </div>
-            <div style={{fontFamily:"Montserrat",fontSize:15,fontWeight:800,color:"#2D2D2D"}}>{req.description||req.items?.[0]?.description}</div>
-          </div>
+          <div><div style={{display:"flex",gap:8,alignItems:"center",marginBottom:8}}><span className="bpo">{req.id}</span><span style={{fontSize:9,fontWeight:700,background:isField?"rgba(212,116,90,.10)":"rgba(91,155,213,.10)",color:isField?"#D4745A":"#5B9BD5",border:`1px solid ${isField?"rgba(212,116,90,.28)":"rgba(91,155,213,.28)"}`,padding:"2px 8px",borderRadius:4,fontFamily:"Montserrat"}}>{isField?"🏗️ Field":"📊 Estimation"}</span><span className="chip" style={{background:p.bg,color:p.color}}>{p.dot} {p.label}</span></div><div style={{fontFamily:"Montserrat",fontSize:15,fontWeight:800,color:"#2D2D2D"}}>{req.description||req.items?.[0]?.description}</div></div>
           <button className="btn btn-ghost btn-sm" onClick={onClose}>✕</button>
         </div>
         <div className="card" style={{padding:"12px 14px",marginBottom:12}}><ProgressBar stage={req.stage}/></div>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
           {[["Project",proj?`${proj.code} — ${proj.name}`:"—"],["Delivery Location",req.deliveryLocation||"—"],["Date Needed",req.neededBy?new Date(req.neededBy).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}):"—"],isField?["Requested By",req.fieldRequestedBy||"—"]:["Est. Budget",req.estimatedBudget?`$${fmt(req.estimatedBudget)}`:"—"],isField?["Supervisor",req.fieldSupervisor||"—"]:["Target Date",req.targetDate||"—"],isField?["Site",req.site||"—"]:["Justification",req.justification||"—"]].map(([k,v])=>(
-            <div key={k} style={{background:"#F7F5F1",borderRadius:7,padding:"8px 12px",border:"1px solid #E8E4DC"}}>
-              <div style={{fontSize:9,color:"#8A8378",fontFamily:"Montserrat",fontWeight:700,letterSpacing:.5,marginBottom:2}}>{k.toUpperCase()}</div>
-              <div style={{fontSize:12,color:"#2D2D2D",fontWeight:600}}>{v}</div>
-            </div>
+            <div key={k} style={{background:"#F7F5F1",borderRadius:7,padding:"8px 12px",border:"1px solid #E8E4DC"}}><div style={{fontSize:9,color:"#8A8378",fontFamily:"Montserrat",fontWeight:700,letterSpacing:.5,marginBottom:2}}>{k.toUpperCase()}</div><div style={{fontSize:12,color:"#2D2D2D",fontWeight:600}}>{v}</div></div>
           ))}
         </div>
         <div style={{marginBottom:12}}>
           <div className="sec-lbl">Line Items ({req.items?.length||1})</div>
           {(req.items||[{description:req.description,qty:req.quantity,unit:req.unit,costCode:req.costCode}]).map((item,i)=>(
             <div key={i} style={{background:"#F7F5F1",border:"1px solid #E8E4DC",borderRadius:8,padding:"10px 12px",marginBottom:5}}>
-              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:3}}>
-                <div style={{width:16,height:16,borderRadius:4,background:"rgba(201,168,76,.10)",border:"1px solid rgba(201,168,76,.28)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,fontWeight:700,color:"#A8863A",fontFamily:"Montserrat"}}>{i+1}</div>
-                <div style={{fontSize:12,color:"#2D2D2D",fontWeight:600}}>{item.description}</div>
-                {item.qty&&<span style={{fontSize:11,color:"#8A8378",marginLeft:"auto"}}>{item.qty} {item.unit}</span>}
-              </div>
-              <div style={{display:"flex",gap:10,fontSize:11,color:"#8A8378",marginLeft:24}}>
-                {item.costCode&&<span>📂 {item.costCode}</span>}
-                {item.notes&&<span>📝 {item.notes}</span>}
-              </div>
+              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:3}}><div style={{width:16,height:16,borderRadius:4,background:"rgba(201,168,76,.10)",border:"1px solid rgba(201,168,76,.28)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:9,fontWeight:700,color:"#A8863A",fontFamily:"Montserrat"}}>{i+1}</div><div style={{fontSize:12,color:"#2D2D2D",fontWeight:600}}>{item.description}</div>{item.qty&&<span style={{fontSize:11,color:"#8A8378",marginLeft:"auto"}}>{item.qty} {item.unit}</span>}</div>
+              <div style={{display:"flex",gap:10,fontSize:11,color:"#8A8378",marginLeft:24}}>{item.costCode&&<span>📂 {item.costCode}</span>}{item.notes&&<span>📝 {item.notes}</span>}</div>
             </div>
           ))}
         </div>
-        <div>
-          <div className="sec-lbl">History</div>
-          {(req.history||[]).map((h,i)=>{const s=STAGES.find(s=>s.id===h.stage);return(<div key={i} style={{display:"flex",gap:8,marginBottom:5,alignItems:"flex-start"}}><div style={{width:7,height:7,borderRadius:"50%",background:s?.color||"#8A8378",marginTop:4,flexShrink:0}}/><div><div style={{fontSize:12,color:"#2D2D2D"}}>{h.note}</div><div style={{fontSize:10,color:"#8A8378"}}>{new Date(h.date).toLocaleDateString("en-US",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"})}</div></div></div>);})}
-        </div>
+        <div><div className="sec-lbl">History</div>{(req.history||[]).map((h,i)=>{const s=STAGES.find(s=>s.id===h.stage);return(<div key={i} style={{display:"flex",gap:8,marginBottom:5,alignItems:"flex-start"}}><div style={{width:7,height:7,borderRadius:"50%",background:s?.color||"#8A8378",marginTop:4,flexShrink:0}}/><div><div style={{fontSize:12,color:"#2D2D2D"}}>{h.note}</div><div style={{fontSize:10,color:"#8A8378"}}>{new Date(h.date).toLocaleDateString("en-US",{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"})}</div></div></div>);})}</div>
         <div style={{display:"flex",justifyContent:"flex-end",marginTop:16}}><button className="btn btn-ghost" onClick={onClose}>Close</button></div>
       </div>
     </div>
@@ -747,8 +736,8 @@ function RFQPage({ctx}){
 
   const handleCreate=async(data)=>{
     const n=ctrRFQ+1;
-    const rfq={...data,id:genId("RFQ",n),createdAt:new Date().toISOString(),status:"sent",
-      responses:data.supplierIds.map(sid=>({supplierId:sid,status:"pending",price:null,deliveryDays:null,paymentTerms:"Net 30",notes:"",respondedAt:null}))};
+    const rfq={...data,id:genId("RFQ",n),createdAt:new Date().toISOString(),status:"sent",attachments:[],
+      responses:data.supplierIds.map(sid=>({supplierId:sid,status:"pending",price:null,deliveryDays:null,paymentTerms:"Net 30",notes:"",attachments:[],respondedAt:null}))};
     const updReqs=reqs.map(r=>r.id===data.poId&&r.stage==="REQ"?{...r,stage:"RFQ",history:[...(r.history||[]),{stage:"RFQ",date:new Date().toISOString(),note:`RFQ ${rfq.id} sent to ${data.supplierIds.length} vendor(s)`}]}:r);
     await saveRfqs([rfq,...rfqs]); await saveReqs(updReqs);
     setCtrRFQ(n); await save("proc:ctrRFQ",n);
@@ -762,10 +751,22 @@ function RFQPage({ctx}){
     showToast("Quote recorded");
   };
 
+  const handleUpdateAttachments=async(rfqId,supId,attachments)=>{
+    const upd=rfqs.map(r=>r.id===rfqId?{...r,responses:r.responses.map(res=>res.supplierId===supId?{...res,attachments}:res)}:r);
+    await saveRfqs(upd);
+    if(selected?.id===rfqId)setSelected(upd.find(r=>r.id===rfqId));
+  };
+
+  const handleRFQAttachments=async(rfqId,attachments)=>{
+    const upd=rfqs.map(r=>r.id===rfqId?{...r,attachments}:r);
+    await saveRfqs(upd);
+    if(selected?.id===rfqId)setSelected(upd.find(r=>r.id===rfqId));
+  };
+
   return(
     <div className="fi">
       <div className="ph">
-        <div><div className="ph-title">💬 Quotations (RFQ)</div><div className="ph-sub">Request for quotation — vendor price comparison</div></div>
+        <div><div className="ph-title">💬 Quotations (RFQ)</div><div className="ph-sub">Request for quotation — attach vendor quotes as PDF</div></div>
         <button className="btn btn-gold" onClick={()=>setShowNew(true)}>+ New RFQ</button>
       </div>
       <div className="pb">
@@ -777,12 +778,13 @@ function RFQPage({ctx}){
             const r=reqs.find(r=>r.id===rfq.poId);
             const resp=rfq.responses.filter(r=>r.status==="quoted").length;
             const tot=rfq.responses.length;
+            const totalAttachments=rfq.responses.reduce((a,r)=>a+(r.attachments?.length||0),0)+(rfq.attachments?.length||0);
             return(
               <div key={rfq.id} className="trow" onClick={()=>setSelected(rfq)}>
                 <div style={{display:"flex",flexDirection:"column",gap:3}}><span className="bgold">{rfq.id}</span><span className="bpo" style={{fontSize:9,padding:"1px 6px"}}>{rfq.poId}</span></div>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontSize:12,color:"#2D2D2D",fontWeight:600,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{r?.description||r?.items?.[0]?.description||"—"}</div>
-                  <div style={{fontSize:11,color:"#8A8378"}}>Due: {new Date(rfq.dueDate).toLocaleDateString("en-US",{month:"short",day:"numeric"})} · {tot} vendor(s)</div>
+                  <div style={{fontSize:11,color:"#8A8378"}}>Due: {new Date(rfq.dueDate).toLocaleDateString("en-US",{month:"short",day:"numeric"})} · {tot} vendor(s){totalAttachments>0?` · 📎 ${totalAttachments} file(s)`:""}</div>
                 </div>
                 <div style={{width:100}}>
                   <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:"#8A8378",marginBottom:2,fontFamily:"Montserrat",fontWeight:600}}><span>Quotes</span><span style={{color:resp===tot?"#5AAD7A":"#A8863A"}}>{resp}/{tot}</span></div>
@@ -795,7 +797,7 @@ function RFQPage({ctx}){
         </div>
       </div>
       {showNew&&<RFQForm eligible={eligible} sups={sups} onClose={()=>setShowNew(false)} onSubmit={handleCreate}/>}
-      {selected&&<RFQDetail rfq={selected} sups={sups} reqs={reqs} onClose={()=>setSelected(null)} onRecord={handleRecord}/>}
+      {selected&&<RFQDetail rfq={selected} sups={sups} reqs={reqs} onClose={()=>setSelected(null)} onRecord={handleRecord} onUpdateAttachments={handleUpdateAttachments} onRFQAttachments={handleRFQAttachments}/>}
     </div>
   );
 }
@@ -821,9 +823,7 @@ function RFQForm({eligible,sups,onClose,onSubmit}){
               <div style={{display:"flex",flexDirection:"column",gap:5,maxHeight:280,overflowY:"auto"}}>
                 {sups.filter(s=>s.active).map(s=>(
                   <div key={s.id} onClick={()=>toggle(s.id)} style={{display:"flex",alignItems:"center",gap:10,padding:"9px 12px",borderRadius:7,border:`1.5px solid ${f.supplierIds.includes(s.id)?"#C9A84C":"#E8E4DC"}`,background:f.supplierIds.includes(s.id)?"rgba(201,168,76,.08)":"#F7F5F1",cursor:"pointer",transition:"all .15s"}}>
-                    <div style={{width:16,height:16,borderRadius:4,border:`1.5px solid ${f.supplierIds.includes(s.id)?"#C9A84C":"#C8C2B4"}`,background:f.supplierIds.includes(s.id)?"#C9A84C":"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
-                      {f.supplierIds.includes(s.id)&&<span style={{color:"#1A1814",fontSize:10,fontWeight:700}}>✓</span>}
-                    </div>
+                    <div style={{width:16,height:16,borderRadius:4,border:`1.5px solid ${f.supplierIds.includes(s.id)?"#C9A84C":"#C8C2B4"}`,background:f.supplierIds.includes(s.id)?"#C9A84C":"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{f.supplierIds.includes(s.id)&&<span style={{color:"#1A1814",fontSize:10,fontWeight:700}}>✓</span>}</div>
                     <div style={{flex:1}}><div style={{fontSize:12,color:"#2D2D2D",fontWeight:600}}>{s.name}</div><div style={{fontSize:11,color:"#8A8378"}}>{s.contact} · {s.phone}</div></div>
                     <span style={{fontSize:10,color:"#8A8378",fontFamily:"Montserrat"}}>{s.category}</span>
                     <Stars r={s.rating}/>
@@ -842,33 +842,36 @@ function RFQForm({eligible,sups,onClose,onSubmit}){
   );
 }
 
-function RFQDetail({rfq,sups,reqs,onClose,onRecord}){
+function RFQDetail({rfq,sups,reqs,onClose,onRecord,onUpdateAttachments,onRFQAttachments}){
   const [recId,setRecId]=useState(null);
   const [rf,setRf]=useState({price:"",deliveryDays:"",paymentTerms:"Net 30",notes:""});
   const req=reqs.find(r=>r.id===rfq.poId);
   const answered=rfq.responses.filter(r=>r.status==="quoted");
   const bestPrice=answered.length?Math.min(...answered.map(r=>r.price)):null;
+
   return(
     <div className="ov" onClick={e=>e.target===e.currentTarget&&onClose()}>
-      <div className="mod su" style={{maxWidth:780}}>
+      <div className="mod su" style={{maxWidth:820}}>
         <div className="mod-head">
           <div><div style={{display:"flex",gap:8,marginBottom:6}}><span className="bgold">{rfq.id}</span><span className="bpo">{rfq.poId}</span></div><div style={{fontFamily:"Montserrat",fontSize:14,fontWeight:800,color:"#2D2D2D"}}>{req?.description||req?.items?.[0]?.description||"—"}</div><div style={{fontSize:11,color:"#8A8378",marginTop:1}}>Due: {new Date(rfq.dueDate).toLocaleDateString("en-US",{month:"long",day:"numeric"})}</div></div>
           <button className="btn btn-ghost btn-sm" onClick={onClose}>✕</button>
         </div>
+
         {answered.length>=2&&(
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
             <div style={{background:"rgba(201,168,76,.08)",border:"1px solid rgba(201,168,76,.25)",borderRadius:8,padding:"10px 14px"}}><div style={{fontSize:10,color:"#A8863A",fontWeight:700,fontFamily:"Montserrat",marginBottom:2}}>BEST PRICE</div><div style={{fontFamily:"Montserrat",fontSize:20,fontWeight:900,color:"#A8863A"}}>${bestPrice?.toLocaleString()}</div></div>
             <div style={{background:"rgba(90,173,122,.08)",border:"1px solid rgba(90,173,122,.25)",borderRadius:8,padding:"10px 14px"}}><div style={{fontSize:10,color:"#5AAD7A",fontWeight:700,fontFamily:"Montserrat",marginBottom:2}}>QUOTES RECEIVED</div><div style={{fontFamily:"Montserrat",fontSize:20,fontWeight:900,color:"#5AAD7A"}}>{answered.length}/{rfq.responses.length}</div></div>
           </div>
         )}
-        <div style={{display:"flex",flexDirection:"column",gap:7,marginBottom:14}}>
+
+        <div style={{display:"flex",flexDirection:"column",gap:7,marginBottom:16}}>
           {rfq.responses.map(res=>{
             const sup=sups.find(s=>s.id===res.supplierId);
             const isRec=recId===res.supplierId;
             const isBest=answered.length>1&&res.price===bestPrice;
             return(
               <div key={res.supplierId} style={{background:"#F7F5F1",border:"1px solid #E8E4DC",borderRadius:9,padding:"11px 14px"}}>
-                <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:isRec?10:0}}>
+                <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
                   <div style={{flex:1}}><div style={{fontSize:13,color:"#2D2D2D",fontWeight:600}}>{sup?.name}</div><div style={{fontSize:11,color:"#8A8378"}}>{sup?.email||sup?.phone}</div></div>
                   {res.status==="quoted"?(
                     <div style={{display:"flex",gap:10,alignItems:"center"}}>
@@ -883,7 +886,7 @@ function RFQDetail({rfq,sups,reqs,onClose,onRecord}){
                   )}
                 </div>
                 {isRec&&(
-                  <div style={{borderTop:"1px solid #E8E4DC",paddingTop:10}}>
+                  <div style={{borderTop:"1px solid #E8E4DC",paddingTop:10,marginBottom:10}}>
                     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 2fr",gap:8,marginBottom:8}}>
                       <div><label className="lbl">Unit Price</label><input className="inp" type="number" value={rf.price} onChange={e=>setRf(p=>({...p,price:e.target.value}))}/></div>
                       <div><label className="lbl">Lead Days</label><input className="inp" type="number" value={rf.deliveryDays} onChange={e=>setRf(p=>({...p,deliveryDays:e.target.value}))}/></div>
@@ -891,16 +894,32 @@ function RFQDetail({rfq,sups,reqs,onClose,onRecord}){
                       <div><label className="lbl">Notes</label><input className="inp" value={rf.notes} onChange={e=>setRf(p=>({...p,notes:e.target.value}))}/></div>
                     </div>
                     <div style={{display:"flex",gap:8}}>
-                      <button className="btn btn-gold btn-sm" disabled={!rf.price||!rf.deliveryDays} onClick={()=>{onRecord(rfq.id,res.supplierId,{price:parseFloat(rf.price),deliveryDays:parseInt(rf.deliveryDays),paymentTerms:rf.paymentTerms,notes:rf.notes});setRecId(null);}}>Save</button>
+                      <button className="btn btn-gold btn-sm" disabled={!rf.price||!rf.deliveryDays} onClick={()=>{onRecord(rfq.id,res.supplierId,{price:parseFloat(rf.price),deliveryDays:parseInt(rf.deliveryDays),paymentTerms:rf.paymentTerms,notes:rf.notes});setRecId(null);}}>Save Quote</button>
                       <button className="btn btn-ghost btn-sm" onClick={()=>setRecId(null)}>Cancel</button>
                     </div>
                   </div>
                 )}
+                <Attachments
+                  attachments={res.attachments||[]}
+                  folder={`rfq-${rfq.id}-${res.supplierId}`}
+                  onAdd={a=>onUpdateAttachments(rfq.id,res.supplierId,[...(res.attachments||[]),a])}
+                  onDelete={i=>onUpdateAttachments(rfq.id,res.supplierId,(res.attachments||[]).filter((_,j)=>j!==i))}
+                />
               </div>
             );
           })}
         </div>
-        <div style={{display:"flex",justifyContent:"flex-end"}}><button className="btn btn-ghost" onClick={onClose}>Close</button></div>
+
+        <div style={{background:"#F7F5F1",border:"1px solid #E8E4DC",borderRadius:9,padding:"14px"}}>
+          <Attachments
+            attachments={rfq.attachments||[]}
+            folder={`rfq-${rfq.id}-general`}
+            onAdd={a=>onRFQAttachments(rfq.id,[...(rfq.attachments||[]),a])}
+            onDelete={i=>onRFQAttachments(rfq.id,(rfq.attachments||[]).filter((_,j)=>j!==i))}
+          />
+        </div>
+
+        <div style={{display:"flex",justifyContent:"flex-end",marginTop:14}}><button className="btn btn-ghost" onClick={onClose}>Close</button></div>
       </div>
     </div>
   );
@@ -948,10 +967,7 @@ function CMPPage({ctx}){
             return(
               <div key={c.id} className="trow" onClick={()=>setSelected(c)}>
                 <div style={{display:"flex",flexDirection:"column",gap:3}}><span className="bgold">{c.id}</span><span className="bpo" style={{fontSize:9,padding:"1px 6px"}}>{c.poId}</span></div>
-                <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:12,color:"#2D2D2D",fontWeight:600,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{req?.description||req?.items?.[0]?.description||"—"}</div>
-                  <div style={{fontSize:11,color:"#8A8378"}}>Recommended: <strong style={{color:"#5AAD7A"}}>{winner?.name||"—"}</strong></div>
-                </div>
+                <div style={{flex:1,minWidth:0}}><div style={{fontSize:12,color:"#2D2D2D",fontWeight:600,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{req?.description||req?.items?.[0]?.description||"—"}</div><div style={{fontSize:11,color:"#8A8378"}}>Recommended: <strong style={{color:"#5AAD7A"}}>{winner?.name||"—"}</strong></div></div>
                 {top&&<div style={{textAlign:"center",padding:"5px 10px",background:`${bc(top.total)}10`,borderRadius:6,border:`1px solid ${bc(top.total)}25`}}><div style={{fontFamily:"Montserrat",fontSize:18,fontWeight:900,color:bc(top.total)}}>{top.total}</div><div style={{fontSize:8,color:"#8A8378",fontWeight:600}}>SCORE</div></div>}
                 <span className="chip" style={{background:c.status==="approved"?"rgba(90,173,122,.12)":"rgba(201,168,76,.10)",color:c.status==="approved"?"#5AAD7A":"#A8863A",border:`1px solid ${c.status==="approved"?"rgba(90,173,122,.28)":"rgba(201,168,76,.28)"}`}}>{c.status==="approved"?"✓ Approved":"⏳ Pending"}</span>
                 <span style={{color:"#C8C2B4",fontSize:13}}>›</span>
@@ -980,8 +996,7 @@ function CMPForm({readyRFQs,reqs,sups,onClose,onSubmit}){
         <div className="mod-head"><div style={{fontFamily:"Montserrat",fontSize:16,fontWeight:800,color:"#2D2D2D"}}>New Vendor Comparison</div><button className="btn btn-ghost btn-sm" onClick={onClose}>✕</button></div>
         <div style={{display:"grid",gap:14}}>
           <div><label className="lbl">Select RFQ</label><select className="sel" value={rfqId} onChange={e=>setRfqId(e.target.value)}>{readyRFQs.map(r=>{const req=reqs.find(req=>req.id===r.poId);return<option key={r.id} value={r.id}>{r.id} · {(req?.description||req?.items?.[0]?.description||r.id).slice(0,42)}</option>;})}</select></div>
-          <div>
-            <label className="lbl">Payment terms per vendor</label>
+          <div><label className="lbl">Payment terms per vendor</label>
             {answers.map(r=>{const sup=sups.find(s=>s.id===r.supplierId);return(
               <div key={r.supplierId} style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,alignItems:"center",padding:"9px 12px",background:"#F7F5F1",border:"1px solid #E8E4DC",borderRadius:7,marginBottom:5}}>
                 <div><div style={{fontSize:12,color:"#2D2D2D",fontWeight:600}}>{sup?.name}</div><div style={{fontSize:11,color:"#8A8378"}}>${r.price?.toLocaleString()} · {r.deliveryDays}d</div></div>
@@ -990,13 +1005,11 @@ function CMPForm({readyRFQs,reqs,sups,onClose,onSubmit}){
             })}
           </div>
           {preview.length>=2&&(
-            <div>
-              <label className="lbl">Score Preview</label>
+            <div><label className="lbl">Score Preview</label>
               {preview.map((r,i)=>(
                 <div key={r.supplierId} style={{display:"flex",alignItems:"center",gap:12,padding:"11px 13px",background:i===0?"rgba(90,173,122,.05)":"#F7F5F1",border:`1px solid ${i===0?"rgba(90,173,122,.2)":"#E8E4DC"}`,borderRadius:9,marginBottom:5}}>
                   <div style={{textAlign:"center",width:44,flexShrink:0}}><div style={{fontFamily:"Montserrat",fontSize:20,fontWeight:900,color:bc(r.total)}}>{r.total}</div><div style={{fontSize:10}}>{i===0?"🥇":i===1?"🥈":"🥉"}</div></div>
-                  <div style={{flex:1}}>
-                    <div style={{fontSize:12,color:"#2D2D2D",fontWeight:700,marginBottom:5}}>{r.sup?.name}</div>
+                  <div style={{flex:1}}><div style={{fontSize:12,color:"#2D2D2D",fontWeight:700,marginBottom:5}}>{r.sup?.name}</div>
                     <div style={{display:"flex",gap:6}}>
                       {[["P",r.ps,"#5AAD7A","60%"],["D",r.ds,"#5B9BD5","25%"],["$",r.ws,"#C9A84C","15%"]].map(([l,s,c,w])=>(
                         <div key={l} style={{flex:1}}><div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:"#8A8378",marginBottom:1,fontFamily:"Montserrat",fontWeight:600}}><span>{l}({w})</span><span style={{color:c}}>{s}</span></div><div style={{height:3,background:"#E8E4DC",borderRadius:2}}><div style={{width:`${s}%`,height:"100%",background:c,borderRadius:2}}/></div></div>
@@ -1024,10 +1037,7 @@ function CMPDetail({cmp,sups,reqs,onClose,onApprove}){
   return(
     <div className="ov" onClick={e=>e.target===e.currentTarget&&onClose()}>
       <div className="mod su" style={{maxWidth:900}}>
-        <div className="mod-head">
-          <div><div style={{display:"flex",gap:8,marginBottom:6}}><span className="bgold">{cmp.id}</span><span className="bpo">{cmp.poId}</span></div><div style={{fontFamily:"Montserrat",fontSize:15,fontWeight:800,color:"#2D2D2D"}}>{req?.description||req?.items?.[0]?.description||"—"}</div></div>
-          <button className="btn btn-ghost btn-sm" onClick={onClose}>✕</button>
-        </div>
+        <div className="mod-head"><div><div style={{display:"flex",gap:8,marginBottom:6}}><span className="bgold">{cmp.id}</span><span className="bpo">{cmp.poId}</span></div><div style={{fontFamily:"Montserrat",fontSize:15,fontWeight:800,color:"#2D2D2D"}}>{req?.description||req?.items?.[0]?.description||"—"}</div></div><button className="btn btn-ghost btn-sm" onClick={onClose}>✕</button></div>
         <div style={{background:"rgba(201,168,76,.08)",border:"1px solid rgba(201,168,76,.25)",borderRadius:7,padding:"8px 12px",marginBottom:14,fontSize:12,color:"#A8863A",fontFamily:"Montserrat",fontWeight:600}}>⚖️ Weighting: Price 60% · Delivery 25% · Payment Terms 15%</div>
         <div style={{display:"grid",gridTemplateColumns:`repeat(${cmp.scored?.length||1},1fr)`,gap:12,marginBottom:16}}>
           {(cmp.scored||[]).map((r,i)=>{
@@ -1035,7 +1045,7 @@ function CMPDetail({cmp,sups,reqs,onClose,onApprove}){
             return(
               <div key={r.supplierId} onClick={()=>cmp.status==="pending"&&setOverride(r.supplierId)} style={{padding:"14px",borderRadius:10,background:isWin?"rgba(90,173,122,.06)":"#F7F5F1",border:`2px solid ${isWin?"#5AAD7A":"#E8E4DC"}`,cursor:cmp.status==="pending"?"pointer":"default",transition:"all .18s"}}>
                 <div style={{textAlign:"center",marginBottom:10}}><div style={{fontSize:14,marginBottom:3}}>{i===0?"🥇":i===1?"🥈":"🥉"}</div><div style={{fontFamily:"Montserrat",fontSize:24,fontWeight:900,color:bc(r.total)}}>{r.total}</div><div style={{fontSize:8,color:"#8A8378",fontFamily:"Montserrat",fontWeight:700,letterSpacing:.5}}>TOTAL SCORE</div></div>
-                <div style={{textAlign:"center",marginBottom:10}}><div style={{fontSize:12,color:"#2D2D2D",fontWeight:700,fontFamily:"Montserrat"}}>{v?.name}</div><div style={{fontSize:10,color:"#8A8378"}}>{v?.contact}</div></div>
+                <div style={{textAlign:"center",marginBottom:10}}><div style={{fontSize:12,color:"#2D2D2D",fontWeight:700,fontFamily:"Montserrat"}}>{v?.name}</div></div>
                 <div style={{background:"#fff",borderRadius:7,padding:"8px",marginBottom:10,textAlign:"center",border:"1px solid #E8E4DC"}}><div style={{fontFamily:"Montserrat",fontSize:16,fontWeight:900,color:"#2D2D2D"}}>${r.price?.toLocaleString()}</div><div style={{fontSize:10,color:"#8A8378"}}>{r.deliveryDays}d · {r.paymentTerms}</div></div>
                 {[["Price",r.ps,"#5AAD7A","60%"],["Delivery",r.ds,"#5B9BD5","25%"],["Payment",r.ws,"#C9A84C","15%"]].map(([l,s,c,w])=>(
                   <div key={l} style={{marginBottom:6}}><div style={{display:"flex",justifyContent:"space-between",fontSize:9,color:"#8A8378",marginBottom:2,fontFamily:"Montserrat",fontWeight:700}}><span>{l} ({w})</span><span style={{color:c}}>{s}/100</span></div><div style={{height:4,background:"#E8E4DC",borderRadius:2}}><div style={{width:`${s}%`,height:"100%",background:c,borderRadius:2}}/></div></div>
@@ -1104,10 +1114,7 @@ function POPage({ctx}){
             return(
               <div key={o.id} className="trow" onClick={()=>setSelected(o)}>
                 <span className="bpo">{o.id}</span>
-                <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:12,color:"#2D2D2D",fontWeight:600,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{req?.description||req?.items?.[0]?.description||"—"}</div>
-                  <div style={{fontSize:11,color:"#8A8378"}}>{sup?.name} · ${parseFloat(o.totalAmount||0).toLocaleString()} · {o.paymentTerms}</div>
-                </div>
+                <div style={{flex:1,minWidth:0}}><div style={{fontSize:12,color:"#2D2D2D",fontWeight:600,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{req?.description||req?.items?.[0]?.description||"—"}</div><div style={{fontSize:11,color:"#8A8378"}}>{sup?.name} · ${parseFloat(o.totalAmount||0).toLocaleString()} · {o.paymentTerms}</div></div>
                 {o.sentToSupplier&&<span className="chip" style={{background:"rgba(91,155,213,.12)",color:"#5B9BD5",border:"1px solid rgba(91,155,213,.28)"}}>📬 Sent</span>}
                 <span className="chip" style={{background:`${st.c}15`,color:st.c,border:`1px solid ${st.c}30`}}>● {st.l}</span>
                 <span style={{color:"#C8C2B4",fontSize:13}}>›</span>
@@ -1133,14 +1140,12 @@ function POForm({readyCMPs,cmps,reqs,sups,onClose,onSubmit}){
   return(
     <div className="ov" onClick={e=>e.target===e.currentTarget&&onClose()}>
       <div className="mod su" style={{maxWidth:660}}>
-        <div className="mod-head"><div><div style={{fontFamily:"Montserrat",fontSize:16,fontWeight:800,color:"#2D2D2D"}}>Issue Purchase Order</div><div style={{fontSize:11,color:"#8A8378",marginTop:2}}>Data loaded automatically from comparison</div></div><button className="btn btn-ghost btn-sm" onClick={onClose}>✕</button></div>
+        <div className="mod-head"><div><div style={{fontFamily:"Montserrat",fontSize:16,fontWeight:800,color:"#2D2D2D"}}>Issue Purchase Order</div><div style={{fontSize:11,color:"#8A8378",marginTop:2}}>Data loaded from approved comparison</div></div><button className="btn btn-ghost btn-sm" onClick={onClose}>✕</button></div>
         <div style={{display:"grid",gap:14}}>
           <div><label className="lbl">Approved Comparison</label><select className="sel" value={cmpId} onChange={e=>setCmpId(e.target.value)}>{readyCMPs.map(c=>{const r=reqs.find(r=>r.id===c.poId);return<option key={c.id} value={c.id}>{c.id} · {(r?.description||r?.items?.[0]?.description||c.id).slice(0,42)}</option>;})}</select></div>
           {cmp&&<div style={{background:"rgba(201,168,76,.08)",border:"1px solid rgba(201,168,76,.25)",borderRadius:8,padding:"11px 14px"}}>
             <div style={{fontSize:10,color:"#A8863A",fontFamily:"Montserrat",fontWeight:700,letterSpacing:1,marginBottom:8}}>AUTO-LOADED FROM COMPARISON</div>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>
-              {[["PO Number",req?.id],["Vendor",sup?.name],["Total",`$${total.toLocaleString()}`]].map(([k,v])=><div key={k}><div style={{fontSize:9,color:"#A8863A",fontFamily:"Montserrat",fontWeight:700,marginBottom:2}}>{k.toUpperCase()}</div><div style={{fontSize:13,color:"#2D2D2D",fontWeight:700}}>{v}</div></div>)}
-            </div>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8}}>{[["PO Number",req?.id],["Vendor",sup?.name],["Total",`$${total.toLocaleString()}`]].map(([k,v])=><div key={k}><div style={{fontSize:9,color:"#A8863A",fontFamily:"Montserrat",fontWeight:700,marginBottom:2}}>{k.toUpperCase()}</div><div style={{fontSize:13,color:"#2D2D2D",fontWeight:700}}>{v}</div></div>)}</div>
           </div>}
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
             <div style={{gridColumn:"1/-1"}}><label className="lbl">Delivery Address *</label><input className="inp" value={f.deliveryAddress} onChange={e=>set("deliveryAddress",e.target.value)} placeholder="Street, City, State, ZIP"/></div>
@@ -1176,17 +1181,10 @@ function PODetail({order,reqs,sups,onClose,onApprove,onSent}){
         {order.approvalStatus==="pending"&&(
           <div style={{background:"#F7F5F1",border:"1px solid #E8E4DC",borderRadius:9,padding:"12px 14px",marginBottom:12}}>
             <div style={{fontSize:11,color:"#8A8378",marginBottom:8,fontFamily:"Montserrat",fontWeight:600}}>MANAGER APPROVAL REQUIRED</div>
-            <div style={{display:"flex",gap:8}}>
-              <input className="inp" placeholder="Approver name" value={approver} onChange={e=>setApprover(e.target.value)} style={{flex:1}}/>
-              <button className="btn btn-success" disabled={!approver} style={{opacity:approver?1:.45}} onClick={()=>onApprove(order.id,approver)}>✓ Approve PO</button>
-            </div>
+            <div style={{display:"flex",gap:8}}><input className="inp" placeholder="Approver name" value={approver} onChange={e=>setApprover(e.target.value)} style={{flex:1}}/><button className="btn btn-success" disabled={!approver} style={{opacity:approver?1:.45}} onClick={()=>onApprove(order.id,approver)}>✓ Approve PO</button></div>
           </div>
         )}
-        {order.approvalStatus==="approved"&&!order.sentToSupplier&&(
-          <div style={{display:"flex",justifyContent:"flex-end",marginBottom:12}}>
-            <button className="btn btn-gold" onClick={()=>onSent(order.id)}>📬 Mark as Sent to Vendor →</button>
-          </div>
-        )}
+        {order.approvalStatus==="approved"&&!order.sentToSupplier&&<div style={{display:"flex",justifyContent:"flex-end",marginBottom:12}}><button className="btn btn-gold" onClick={()=>onSent(order.id)}>📬 Mark as Sent to Vendor →</button></div>}
         {order.approvalStatus==="approved"&&<div style={{padding:"9px 12px",background:"rgba(90,173,122,.08)",border:"1px solid rgba(90,173,122,.25)",borderRadius:7,fontSize:12,color:"#5AAD7A",fontFamily:"Montserrat",fontWeight:600}}>✅ Approved by {order.approvedBy}{order.sentToSupplier?" · 📬 Sent to vendor":""}</div>}
         <div style={{display:"flex",justifyContent:"flex-end",marginTop:14}}><button className="btn btn-ghost" onClick={onClose}>Close</button></div>
       </div>
@@ -1238,8 +1236,7 @@ function DELPage({ctx}){
         {dels.filter(d=>d.status!=="completed"&&(d.status==="delayed"||daysUntil(d.expectedDate)<=3)).map(d=>{
           const days=daysUntil(d.expectedDate); const req=reqs.find(r=>r.id===d.poId);
           return(<div key={d.id} onClick={()=>setSelected(d)} style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",background:"rgba(212,116,90,.06)",border:"1px solid rgba(212,116,90,.2)",borderRadius:8,marginBottom:8,cursor:"pointer",fontSize:12}}>
-            <span>🔴</span>
-            <span style={{color:"#D4745A",fontWeight:600,flex:1,fontFamily:"Montserrat"}}>{(req?.description||req?.items?.[0]?.description||"").slice(0,50)} — {d.status==="delayed"?"Delay reported":days<0?`${Math.abs(days)}d overdue`:days===0?"Due today":`${days}d until delivery`}</span>
+            <span>🔴</span><span style={{color:"#D4745A",fontWeight:600,flex:1,fontFamily:"Montserrat"}}>{(req?.description||req?.items?.[0]?.description||"").slice(0,50)} — {d.status==="delayed"?"Delay reported":days<0?`${Math.abs(days)}d overdue`:days===0?"Due today":`${days}d until delivery`}</span>
             <span style={{fontSize:11,color:"#8A8378"}}>View →</span>
           </div>);
         })}
@@ -1253,13 +1250,8 @@ function DELPage({ctx}){
             const days=daysUntil(d.expectedDate);
             return(
               <div key={d.id} className="trow" onClick={()=>setSelected(d)}>
-                <div style={{width:42,height:42,borderRadius:8,background:`${stC[d.status]||"#4AADA0"}10`,border:`1px solid ${stC[d.status]||"#4AADA0"}30`,display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"Montserrat",fontSize:11,fontWeight:800,color:stC[d.status]||"#4AADA0",flexShrink:0}}>
-                  {tot>0?`${Math.round(rec/tot*100)}%`:"0%"}
-                </div>
-                <div style={{flex:1,minWidth:0}}>
-                  <div style={{fontSize:12,color:"#2D2D2D",fontWeight:600,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{req?.description||req?.items?.[0]?.description||"—"}</div>
-                  <div style={{fontSize:11,color:"#8A8378"}}>{sup?.name}</div>
-                </div>
+                <div style={{width:42,height:42,borderRadius:8,background:`${stC[d.status]||"#4AADA0"}10`,border:`1px solid ${stC[d.status]||"#4AADA0"}30`,display:"flex",alignItems:"center",justifyContent:"center",fontFamily:"Montserrat",fontSize:11,fontWeight:800,color:stC[d.status]||"#4AADA0",flexShrink:0}}>{tot>0?`${Math.round(rec/tot*100)}%`:"0%"}</div>
+                <div style={{flex:1,minWidth:0}}><div style={{fontSize:12,color:"#2D2D2D",fontWeight:600,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{req?.description||req?.items?.[0]?.description||"—"}</div><div style={{fontSize:11,color:"#8A8378"}}>{sup?.name}</div></div>
                 <div style={{textAlign:"right",fontSize:11,fontFamily:"Montserrat",fontWeight:700,color:days<0?"#D4745A":days<=3?"#D4745A":days<=7?"#A8863A":"#5AAD7A"}}>{days<0?`${Math.abs(days)}d late`:days===0?"Today":`${days}d`}</div>
                 <span className="chip" style={{background:`${stC[d.status]||"#4AADA0"}12`,color:stC[d.status]||"#4AADA0"}}>● {stL[d.status]||d.status}</span>
                 <span style={{color:"#C8C2B4",fontSize:13}}>›</span>
@@ -1279,7 +1271,7 @@ function DELForm({orders,reqs,sups,onClose,onSubmit}){
   const [f,setF]=useState({expectedDate:"",logisticsType:"delivery",trackingNumber:"",notes:""});
   const [partials,setPartials]=useState([{qty:"",expectedDate:"",note:""}]);
   const set=(k,v)=>setF(p=>({...p,[k]:v}));
-  const order=orders.find(o=>o.id===orderId); const req=reqs.find(r=>r.id===order?.poId);
+  const order=orders.find(o=>o.id===orderId);
   const valid=orderId&&f.expectedDate&&partials.every(p=>p.qty&&p.expectedDate);
   return(
     <div className="ov" onClick={e=>e.target===e.currentTarget&&onClose()}>
@@ -1324,7 +1316,7 @@ function DELDetail({del,reqs,sups,onClose,onPartial}){
     <div className="ov" onClick={e=>e.target===e.currentTarget&&onClose()}>
       <div className="mod su" style={{maxWidth:700}}>
         <div className="mod-head">
-          <div><div style={{display:"flex",gap:8,marginBottom:6}}><span className="bgold">{del.id}</span><span className="bpo">{del.orderId}</span><span className="chip" style={{background:`${stC[del.status]||"#4AADA0"}12`,color:stC[del.status]||"#4AADA0"}}>● {del.status}</span></div><div style={{fontFamily:"Montserrat",fontSize:14,fontWeight:800,color:"#2D2D2D"}}>{req?.description||req?.items?.[0]?.description||"—"}</div><div style={{fontSize:11,color:"#8A8378",marginTop:1}}>{sup?.name} · {rec}/{tot} {req?.unit||"units"} received</div></div>
+          <div><div style={{display:"flex",gap:8,marginBottom:6}}><span className="bgold">{del.id}</span><span className="bpo">{del.orderId}</span><span className="chip" style={{background:`${stC[del.status]||"#4AADA0"}12`,color:stC[del.status]||"#4AADA0"}}>● {del.status}</span></div><div style={{fontFamily:"Montserrat",fontSize:14,fontWeight:800,color:"#2D2D2D"}}>{req?.description||req?.items?.[0]?.description||"—"}</div><div style={{fontSize:11,color:"#8A8378",marginTop:1}}>{sup?.name} · {rec}/{tot} units received</div></div>
           <button className="btn btn-ghost btn-sm" onClick={onClose}>✕</button>
         </div>
         <div style={{height:7,background:"#E8E4DC",borderRadius:4,overflow:"hidden",marginBottom:14}}><div style={{width:`${tot?rec/tot*100:0}%`,height:"100%",background:stC[del.status]||"#4AADA0",borderRadius:4,transition:"width .4s"}}/></div>
@@ -1334,7 +1326,7 @@ function DELDetail({del,reqs,sups,onClose,onPartial}){
               <div style={{display:"flex",alignItems:"center",gap:10,padding:"10px 12px",background:p.received?"rgba(90,173,122,.06)":"#F7F5F1",border:`1px solid ${p.received?"rgba(90,173,122,.25)":"#E8E4DC"}`,borderRadius:8}}>
                 <div style={{width:22,height:22,borderRadius:6,background:p.received?"#5AAD7A":"#E8E4DC",display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,color:p.received?"#fff":"#8A8378",fontWeight:700,fontFamily:"Montserrat",flexShrink:0}}>{p.received?"✓":p.id}</div>
                 <div style={{flex:1}}><div style={{fontSize:12,color:"#2D2D2D",fontWeight:600}}>{p.qty} units · {p.note||new Date(p.expectedDate).toLocaleDateString("en-US",{month:"short",day:"numeric"})}</div></div>
-                {!p.received&&del.status!=="completed"&&<button className="btn btn-dark btn-sm" onClick={()=>{setRecId(p.id);setRq({qty:String(p.qty),note:""});}}>Confirm Receipt</button>}
+                {!p.received&&del.status!=="completed"&&<button className="btn btn-dark btn-sm" onClick={()=>{setRecId(p.id);setRq({qty:String(p.qty),note:""});}}>Confirm</button>}
                 {p.received&&<span style={{fontSize:10,color:"#5AAD7A",fontFamily:"Montserrat",fontWeight:700}}>Received {new Date(p.receivedAt).toLocaleDateString("en-US",{month:"short",day:"numeric"})}</span>}
               </div>
               {recId===p.id&&(
@@ -1350,13 +1342,7 @@ function DELDetail({del,reqs,sups,onClose,onPartial}){
             </div>
           ))}
         </div>
-        <div style={{marginBottom:12}}>
-          {[...del.events].reverse().map((ev,i)=>(
-            <div key={i} style={{display:"flex",gap:8,alignItems:"center",fontSize:11,color:"#8A8378",marginBottom:3}}>
-              <span style={{fontSize:12}}>{ev.icon}</span><span style={{color:"#5A5550",flex:1}}>{ev.note}</span><span>{new Date(ev.date).toLocaleDateString("en-US",{month:"short",day:"numeric"})}</span>
-            </div>
-          ))}
-        </div>
+        <div style={{marginBottom:12}}>{[...del.events].reverse().map((ev,i)=>(<div key={i} style={{display:"flex",gap:8,alignItems:"center",fontSize:11,color:"#8A8378",marginBottom:3}}><span style={{fontSize:12}}>{ev.icon}</span><span style={{color:"#5A5550",flex:1}}>{ev.note}</span><span>{new Date(ev.date).toLocaleDateString("en-US",{month:"short",day:"numeric"})}</span></div>))}</div>
         <div style={{display:"flex",justifyContent:"flex-end"}}><button className="btn btn-ghost" onClick={onClose}>Close</button></div>
       </div>
     </div>
@@ -1390,7 +1376,7 @@ function RCVPage({ctx}){
           ))}
         </div>
         <div className="card" style={{overflow:"hidden"}}>
-          <SH title="Receipt Notes" action={readyDels.length>0&&<span style={{fontSize:11,color:"#9B7DC8",fontFamily:"Montserrat",fontWeight:700}}>{readyDels.length} delivery ready to verify</span>}/>
+          <SH title="Receipt Notes" action={readyDels.length>0&&<span style={{fontSize:11,color:"#9B7DC8",fontFamily:"Montserrat",fontWeight:700}}>{readyDels.length} delivery ready</span>}/>
           {rcvs.length===0?<Empty icon="✅" msg="No receipt notes" sub={readyDels.length>0?"Verify pending deliveries":"Complete a delivery first"}/>:
           rcvs.map(gr=>{
             const req=reqs.find(r=>r.id===gr.poId); const sup=sups.find(s=>s.id===gr.supplierId); const isOk=gr.result==="compliant";
@@ -1437,15 +1423,13 @@ function GRForm({deliveries,reqs,orders,sups,onClose,onSubmit}){
                 <button onClick={()=>toggle(item.id,true)} style={{width:28,height:28,borderRadius:6,border:`1.5px solid ${val===true?"#5AAD7A":"#E8E4DC"}`,background:val===true?"#5AAD7A":"#fff",color:val===true?"#fff":"#8A8378",cursor:"pointer",fontSize:13,fontWeight:700,transition:"all .15s"}}>✓</button>
                 <button onClick={()=>toggle(item.id,false)} style={{width:28,height:28,borderRadius:6,border:`1.5px solid ${val===false?"#D4745A":"#E8E4DC"}`,background:val===false?"#D4745A":"#fff",color:val===false?"#fff":"#8A8378",cursor:"pointer",fontSize:13,fontWeight:700,transition:"all .15s"}}>✕</button>
               </div>);})}
-            {allChecked&&<div style={{padding:"9px 13px",borderRadius:8,background:result==="compliant"?"rgba(90,173,122,.08)":"rgba(212,116,90,.08)",border:`1px solid ${result==="compliant"?"rgba(90,173,122,.25)":"rgba(212,116,90,.25)"}`,fontSize:12,color:result==="compliant"?"#5AAD7A":"#D4745A",fontFamily:"Montserrat",fontWeight:700,marginTop:6}}>
-              {result==="compliant"?"✅ COMPLIANT — GR will proceed to Payment":"⚠️ NON-COMPLIANT — Discrepancies will be recorded"}
-            </div>}
+            {allChecked&&<div style={{padding:"9px 13px",borderRadius:8,background:result==="compliant"?"rgba(90,173,122,.08)":"rgba(212,116,90,.08)",border:`1px solid ${result==="compliant"?"rgba(90,173,122,.25)":"rgba(212,116,90,.25)"}`,fontSize:12,color:result==="compliant"?"#5AAD7A":"#D4745A",fontFamily:"Montserrat",fontWeight:700,marginTop:6}}>{result==="compliant"?"✅ COMPLIANT — GR will proceed to Payment":"⚠️ NON-COMPLIANT — Discrepancies will be recorded"}</div>}
           </div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
             <div><label className="lbl">Received By *</label><input className="inp" value={f.receivedBy} onChange={e=>set("receivedBy",e.target.value)} placeholder="Receiver name"/></div>
-            <div><label className="lbl">Actual Qty Received *</label><input className="inp" type="number" value={f.receivedQty} onChange={e=>set("receivedQty",e.target.value)} placeholder={req?.quantity}/></div>
+            <div><label className="lbl">Actual Qty Received *</label><input className="inp" type="number" value={f.receivedQty} onChange={e=>set("receivedQty",e.target.value)}/></div>
           </div>
-          <div><label className="lbl">General Observations</label><textarea className="ta" value={f.notes} onChange={e=>set("notes",e.target.value)} placeholder="Delivery conditions, packaging, temperature, etc."/></div>
+          <div><label className="lbl">General Observations</label><textarea className="ta" value={f.notes} onChange={e=>set("notes",e.target.value)} placeholder="Delivery conditions, packaging, etc."/></div>
           <div style={{display:"flex",justifyContent:"flex-end",gap:10,paddingTop:12,borderTop:"1px solid #E8E4DC"}}>
             <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
             <button className="btn btn-gold" disabled={!valid} style={{opacity:valid?1:.45}} onClick={()=>onSubmit({deliveryId:delId,orderId:del?.orderId,poId:del?.poId,supplierId:del?.supplierId,checklist:checks,result,...f})}>Issue Receipt Note →</button>
@@ -1464,7 +1448,7 @@ function GRDetail({gr,reqs,sups,onClose}){
         <div className="mod-head"><div><div style={{display:"flex",gap:8,marginBottom:6}}><span className="bgold">{gr.id}</span><span className="bpo">{gr.poId}</span><span className="chip" style={{background:isOk?"rgba(90,173,122,.12)":"rgba(212,116,90,.12)",color:isOk?"#5AAD7A":"#D4745A",border:`1px solid ${isOk?"rgba(90,173,122,.28)":"rgba(212,116,90,.28)"}`}}>{isOk?"✓ Compliant":"⚠ Non-Compliant"}</span></div><div style={{fontFamily:"Montserrat",fontSize:14,fontWeight:800,color:"#2D2D2D"}}>{req?.description||req?.items?.[0]?.description||"—"}</div></div><button className="btn btn-ghost btn-sm" onClick={onClose}>✕</button></div>
         {CHECKLIST_ITEMS.map(item=>{const val=gr.checklist?.[item.id];return(<div key={item.id} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 12px",background:val===true?"rgba(90,173,122,.05)":"rgba(212,116,90,.05)",border:`1px solid ${val===true?"rgba(90,173,122,.2)":"rgba(212,116,90,.2)"}`,borderRadius:7,marginBottom:4}}><span style={{fontSize:14}}>{val===true?"✅":"❌"}</span><span style={{fontSize:12,color:"#2D2D2D",fontWeight:500}}>{item.label}</span></div>);})}
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:12}}>
-          {[["Received By",gr.receivedBy],["Qty Received",`${gr.receivedQty} ${req?.unit||"units"}`],["Vendor",sup?.name],["Observations",gr.notes||"—"]].map(([k,v])=>(
+          {[["Received By",gr.receivedBy],["Qty Received",`${gr.receivedQty} units`],["Vendor",sup?.name],["Observations",gr.notes||"—"]].map(([k,v])=>(
             <div key={k} style={{background:"#F7F5F1",borderRadius:7,padding:"8px 12px",border:"1px solid #E8E4DC"}}><div style={{fontSize:9,color:"#8A8378",fontFamily:"Montserrat",fontWeight:700,letterSpacing:.5,marginBottom:2}}>{k.toUpperCase()}</div><div style={{fontSize:12,color:"#2D2D2D",fontWeight:600}}>{v}</div></div>
           ))}
         </div>
@@ -1553,20 +1537,18 @@ function PAYForm({rcvs,orders,reqs,sups,onClose,onSubmit}){
             <div><label className="lbl">Payment Method</label><select className="sel" value={f.paymentMethod} onChange={e=>set("paymentMethod",e.target.value)}>{PAY_METHODS.map(m=><option key={m}>{m}</option>)}</select></div>
             <div><label className="lbl">Notes for AP</label><input className="inp" value={f.notes} onChange={e=>set("notes",e.target.value)}/></div>
           </div>
-          {f.invoiceAmount&&(
-            <div style={{padding:"12px 14px",background:matchOk?"rgba(90,173,122,.06)":"rgba(201,168,76,.06)",border:`1px solid ${matchOk?"rgba(90,173,122,.25)":"rgba(201,168,76,.28)"}`,borderRadius:9}}>
-              <div style={{fontFamily:"Montserrat",fontSize:13,fontWeight:800,color:matchOk?"#5AAD7A":"#A8863A",marginBottom:8}}>{matchOk?"✅ 3-Way Match approved":"⚠️ Match has differences — will be documented"}</div>
-              <div style={{display:"flex",gap:8}}>
-                {[["Quantities",qtyOk,"±5% tolerance"],["Amounts",priceOk,"±2% tolerance"],["GR Compliant",grOk,""]].map(([l,ok,sub])=>(
-                  <div key={l} style={{flex:1,padding:"7px 9px",background:ok?"rgba(90,173,122,.08)":"rgba(212,116,90,.08)",border:`1px solid ${ok?"rgba(90,173,122,.2)":"rgba(212,116,90,.2)"}`,borderRadius:7,textAlign:"center"}}>
-                    <div style={{fontSize:14,marginBottom:2}}>{ok?"✅":"❌"}</div>
-                    <div style={{fontSize:10,color:ok?"#5AAD7A":"#D4745A",fontFamily:"Montserrat",fontWeight:700}}>{l}</div>
-                    {sub&&<div style={{fontSize:9,color:"#8A8378",marginTop:1}}>{sub}</div>}
-                  </div>
-                ))}
-              </div>
+          {f.invoiceAmount&&(<div style={{padding:"12px 14px",background:matchOk?"rgba(90,173,122,.06)":"rgba(201,168,76,.06)",border:`1px solid ${matchOk?"rgba(90,173,122,.25)":"rgba(201,168,76,.28)"}`,borderRadius:9}}>
+            <div style={{fontFamily:"Montserrat",fontSize:13,fontWeight:800,color:matchOk?"#5AAD7A":"#A8863A",marginBottom:8}}>{matchOk?"✅ 3-Way Match approved":"⚠️ Match has differences"}</div>
+            <div style={{display:"flex",gap:8}}>
+              {[["Quantities",qtyOk,"±5%"],["Amounts",priceOk,"±2%"],["GR OK",grOk,""]].map(([l,ok,sub])=>(
+                <div key={l} style={{flex:1,padding:"7px 9px",background:ok?"rgba(90,173,122,.08)":"rgba(212,116,90,.08)",border:`1px solid ${ok?"rgba(90,173,122,.2)":"rgba(212,116,90,.2)"}`,borderRadius:7,textAlign:"center"}}>
+                  <div style={{fontSize:14,marginBottom:2}}>{ok?"✅":"❌"}</div>
+                  <div style={{fontSize:10,color:ok?"#5AAD7A":"#D4745A",fontFamily:"Montserrat",fontWeight:700}}>{l}</div>
+                  {sub&&<div style={{fontSize:9,color:"#8A8378",marginTop:1}}>{sub}</div>}
+                </div>
+              ))}
             </div>
-          )}
+          </div>)}
           <div style={{display:"flex",justifyContent:"flex-end",gap:10,paddingTop:12,borderTop:"1px solid #E8E4DC"}}>
             <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
             <button className="btn btn-gold" disabled={!valid} style={{opacity:valid?1:.45}} onClick={()=>onSubmit({grId,orderId:gr?.orderId,poId:gr?.poId,supplierId:gr?.supplierId,matchResult:matchOk,matchDetails:{qtyOk,priceOk,grOk},...f})}>Send to Accounts Payable →</button>
@@ -1589,18 +1571,155 @@ function PAYDetail({pay,reqs,sups,orders,rcvs,onClose,onPaid}){
             <div key={k} style={{background:"#F7F5F1",borderRadius:7,padding:"8px 12px",border:"1px solid #E8E4DC"}}><div style={{fontSize:9,color:"#8A8378",fontFamily:"Montserrat",fontWeight:700,letterSpacing:.5,marginBottom:2}}>{k.toUpperCase()}</div><div style={{fontSize:12,color:"#2D2D2D",fontWeight:600}}>{v}</div></div>
           ))}
         </div>
-        {!isPaid?(
-          <div style={{display:"flex",justifyContent:"flex-end"}}>
-            <button className="btn btn-gold" onClick={()=>onPaid(pay.id)}>💳 Mark as Paid — Process Complete →</button>
+        {!isPaid?<div style={{display:"flex",justifyContent:"flex-end"}}><button className="btn btn-gold" onClick={()=>onPaid(pay.id)}>💳 Mark as Paid — Process Complete →</button></div>:
+        <div style={{textAlign:"center",padding:"22px",background:"rgba(90,173,122,.06)",border:"1px solid rgba(90,173,122,.2)",borderRadius:12}}>
+          <div style={{fontSize:30,marginBottom:8}}>🎉</div>
+          <div style={{fontFamily:"Montserrat",fontSize:15,fontWeight:800,color:"#5AAD7A"}}>Process Complete!</div>
+          <div style={{fontSize:12,color:"#8A8378",marginTop:4}}>Paid on {new Date(pay.paidAt).toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"})}</div>
+          <div style={{marginTop:8,fontSize:11,color:"#A8863A",fontFamily:"Montserrat",fontWeight:700}}>748 Development — People who build</div>
+        </div>}
+      </div>
+    </div>
+  );
+}
+function Tracker({ctx}){
+  const {reqs,sups}=ctx;
+  const [search,setSearch]=useState("");
+  const [filter,setFilter]=useState("all");
+  const filtered=reqs.filter(r=>{
+    const ms=r.description?.toLowerCase().includes(search.toLowerCase())||r.id?.toLowerCase().includes(search.toLowerCase())||r.items?.some(i=>i.description?.toLowerCase().includes(search.toLowerCase()));
+    const mf=filter==="all"||r.stage===filter;
+    return ms&&mf;
+  });
+  return(
+    <div className="fi">
+      <div className="ph">
+        <div><div className="ph-title">🔍 Global Tracker</div><div className="ph-sub">Track any PR from start to finish</div></div>
+        <div style={{display:"flex",gap:8}}>
+          <input className="inp" style={{width:220}} placeholder="Search PR# or description..." value={search} onChange={e=>setSearch(e.target.value)}/>
+          <select className="sel" style={{width:160}} value={filter} onChange={e=>setFilter(e.target.value)}>
+            <option value="all">All Stages</option>
+            {STAGES.map(s=><option key={s.id} value={s.id}>{s.icon} {s.label}</option>)}
+          </select>
+        </div>
+      </div>
+      <div className="pb">
+        <div className="gl"/>
+        {filtered.length===0?<Empty icon="🔍" msg="No results" sub="Try a different filter or search term"/>:
+        filtered.map(r=>{
+          const s=STAGES.find(s=>s.id===r.stage); const p=PRIORITY[r.priority]||PRIORITY.normal;
+          const isField=r.reqType==="field";
+          return(
+            <div key={r.id} className="card" style={{marginBottom:10,padding:"14px 16px"}}>
+              <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+                <span className="bpo">{r.id}</span>
+                <span style={{fontSize:9,fontWeight:700,background:isField?"rgba(212,116,90,.10)":"rgba(91,155,213,.10)",color:isField?"#D4745A":"#5B9BD5",border:`1px solid ${isField?"rgba(212,116,90,.28)":"rgba(91,155,213,.28)"}`,padding:"1px 6px",borderRadius:4,fontFamily:"Montserrat"}}>{isField?"🏗️ Field":"📊 Estimation"}</span>
+                <div style={{flex:1}}>
+                  <div style={{fontSize:12,color:"#2D2D2D",fontWeight:700}}>{r.description||r.items?.[0]?.description}</div>
+                  <div style={{fontSize:11,color:"#8A8378",marginTop:1}}>{r.items?.length||1} item(s) · {new Date(r.createdAt).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"})}</div>
+                </div>
+                <span className="chip" style={{background:p.bg,color:p.color}}>{p.dot} {p.label}</span>
+                <span className="chip" style={{background:`${s?.color}12`,color:s?.color}}>● {s?.label}</span>
+              </div>
+              <ProgressBar stage={r.stage}/>
+              {r.history?.length>0&&(
+                <div style={{marginTop:10,paddingTop:8,borderTop:"1px solid #E8E4DC"}}>
+                  <div style={{display:"flex",gap:14,overflowX:"auto",paddingBottom:2}}>
+                    {r.history.map((h,i)=>{const hs=STAGES.find(s=>s.id===h.stage);return(<div key={i} style={{flexShrink:0,fontSize:11,display:"flex",alignItems:"center",gap:5,color:"#8A8378"}}><div style={{width:6,height:6,borderRadius:"50%",background:hs?.color||"#8A8378",flexShrink:0}}/><span style={{color:"#5A5550"}}>{h.note?.slice(0,40)}</span><span style={{color:"#C8C2B4"}}>·</span><span>{new Date(h.date).toLocaleDateString("en-US",{month:"short",day:"numeric"})}</span></div>);})}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function VendorsPage({ctx}){
+  const {sups,saveSups,showToast}=ctx;
+  const [showNew,setShowNew]=useState(false);
+  const [search,setSearch]=useState("");
+  const [filterCat,setFilterCat]=useState("all");
+  const handleAdd=async(vendor)=>{
+    const newV={...vendor,id:`V${Date.now()}`,rating:4.0,active:true};
+    await saveSups([...sups,newV]);
+    setShowNew(false); showToast(`${vendor.name} added`);
+  };
+  const handleToggle=async(id)=>{
+    const updated=sups.map(s=>s.id===id?{...s,active:!s.active}:s);
+    await saveSups(updated); showToast("Vendor updated");
+  };
+  const filtered=sups.filter(s=>{
+    const ms=s.name?.toLowerCase().includes(search.toLowerCase())||s.contact?.toLowerCase().includes(search.toLowerCase());
+    const mc=filterCat==="all"||s.category===filterCat;
+    return ms&&mc;
+  });
+  const cats=["all",...new Set(sups.map(s=>s.category).filter(Boolean))];
+  return(
+    <div className="fi">
+      <div className="ph">
+        <div><div className="ph-title">🏢 Vendor Database</div><div className="ph-sub">{sups.filter(s=>s.active).length} active · {sups.length} total</div></div>
+        <button className="btn btn-gold" onClick={()=>setShowNew(true)}>+ Add Vendor</button>
+      </div>
+      <div className="pb">
+        <div className="gl"/>
+        <div style={{display:"flex",gap:8,marginBottom:14}}>
+          <input className="inp" style={{flex:1}} placeholder="Search vendor or contact..." value={search} onChange={e=>setSearch(e.target.value)}/>
+          <select className="sel" style={{width:180}} value={filterCat} onChange={e=>setFilterCat(e.target.value)}>
+            {cats.map(c=><option key={c} value={c}>{c==="all"?"All Categories":c}</option>)}
+          </select>
+        </div>
+        <div className="card" style={{overflow:"hidden"}}>
+          <SH title={`Vendors · ${filtered.length} results`}/>
+          {filtered.map(s=>(
+            <div key={s.id} className="trow" style={{cursor:"default"}}>
+              <div style={{width:36,height:36,borderRadius:8,background:"rgba(201,168,76,.08)",border:"1px solid rgba(201,168,76,.25)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>🏢</div>
+              <div style={{flex:1,minWidth:0}}>
+                <div style={{fontSize:13,color:"#2D2D2D",fontWeight:600,display:"flex",alignItems:"center",gap:6}}>
+                  {s.name}
+                  {!s.active&&<span style={{fontSize:9,background:"rgba(212,116,90,.10)",color:"#D4745A",border:"1px solid rgba(212,116,90,.28)",padding:"1px 5px",borderRadius:4,fontFamily:"Montserrat",fontWeight:700}}>INACTIVE</span>}
+                </div>
+                <div style={{fontSize:11,color:"#8A8378"}}>{s.contact}{s.email?` · ${s.email}`:""}{s.phone?` · ${s.phone}`:""}</div>
+              </div>
+              <span className="chip" style={{background:"rgba(201,168,76,.08)",color:"#A8863A",border:"1px solid rgba(201,168,76,.25)"}}>{s.category}</span>
+              <Stars r={s.rating}/>
+              <button onClick={()=>handleToggle(s.id)} className={`btn btn-sm ${s.active?"btn-danger":"btn-success"}`}>{s.active?"Deactivate":"Activate"}</button>
+            </div>
+          ))}
+        </div>
+      </div>
+      {showNew&&<AddVendorForm onClose={()=>setShowNew(false)} onSubmit={handleAdd}/>}
+    </div>
+  );
+}
+
+function AddVendorForm({onClose,onSubmit}){
+  const [f,setF]=useState({name:"",contact:"",email:"",phone:"",category:"General Materials"});
+  const set=(k,v)=>setF(p=>({...p,[k]:v}));
+  const valid=f.name&&f.contact;
+  return(
+    <div className="ov" onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div className="mod su" style={{maxWidth:500}}>
+        <div className="mod-head"><div style={{fontFamily:"Montserrat",fontSize:16,fontWeight:800,color:"#2D2D2D"}}>Add New Vendor</div><button className="btn btn-ghost btn-sm" onClick={onClose}>✕</button></div>
+        <div style={{display:"grid",gap:12}}>
+          <div><label className="lbl">Company Name *</label><input className="inp" value={f.name} onChange={e=>set("name",e.target.value)} placeholder="Vendor company name"/></div>
+          <div><label className="lbl">Contact Person *</label><input className="inp" value={f.contact} onChange={e=>set("contact",e.target.value)} placeholder="Contact name"/></div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+            <div><label className="lbl">Email</label><input className="inp" type="email" value={f.email} onChange={e=>set("email",e.target.value)} placeholder="email@company.com"/></div>
+            <div><label className="lbl">Phone</label><input className="inp" value={f.phone} onChange={e=>set("phone",e.target.value)} placeholder="305-XXX-XXXX"/></div>
           </div>
-        ):(
-          <div style={{textAlign:"center",padding:"22px",background:"rgba(90,173,122,.06)",border:"1px solid rgba(90,173,122,.2)",borderRadius:12}}>
-            <div style={{fontSize:30,marginBottom:8}}>🎉</div>
-            <div style={{fontFamily:"Montserrat",fontSize:15,fontWeight:800,color:"#5AAD7A"}}>Process Complete!</div>
-            <div style={{fontSize:12,color:"#8A8378",marginTop:4}}>Paid on {new Date(pay.paidAt).toLocaleDateString("en-US",{month:"long",day:"numeric",year:"numeric"})}</div>
-            <div style={{marginTop:8,fontSize:11,color:"#A8863A",fontFamily:"Montserrat",fontWeight:700}}>748 Development — People who build</div>
+          <div><label className="lbl">Category</label>
+            <select className="sel" value={f.category} onChange={e=>set("category",e.target.value)}>
+              {VENDOR_CATS.map(c=><option key={c}>{c}</option>)}
+            </select>
           </div>
-        )}
+          <div style={{display:"flex",justifyContent:"flex-end",gap:10,paddingTop:12,borderTop:"1px solid #E8E4DC"}}>
+            <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+            <button className="btn btn-gold" disabled={!valid} style={{opacity:valid?1:.45}} onClick={()=>onSubmit(f)}>Add Vendor →</button>
+          </div>
+        </div>
       </div>
     </div>
   );
